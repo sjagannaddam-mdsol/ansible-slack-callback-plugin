@@ -1,147 +1,59 @@
-# (C) 2015, Christian West <west.christianj@gmail.com>
+# These imports are defined for every callback plugin I've seen so far.
+# If you don't import `absolute_import` standard library modules may be
+# overriden by Ansible python modules with the same name. For example: I use the
+# standard library `json` module, but Ansible has a callback plugin with the
+# same name. When I excluded `absolute_import` and imported `json` the json
+# module I got was Ansible's json module and not the standard library one.
+# I'm not sure why `division` and `print_function` need to be imported.
+from __future__ import (absolute_import, division, print_function)
+from ansible.plugins.callback import CallbackBase
 
-# This plugin used the HipChat plugin created by Matt Martz <matt@sivel.net>
-# as a starting point.
 
-# This file is part of Ansible
-#
-# Ansible is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# Ansible is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+__metaclass__ = type
 
-import os
 import json
-import urllib2
+import urllib3
+import sys
+import os
+http = urllib3.PoolManager()
+# Ansible documentation of the module. I'm also not sure why this is required,
+# but other plugins add documentation so it seems to be a standard.
+DOCUMENTATION = '''
+    callback: slack
+    options:
+      slack_webhook_url:
+        required: True
+        env:
+          - name: SLACK_WEBHOOK_URL
+      slack_channel:
+        required: False
+        env:
+          - name: SLACK_CHANNEL
+'''
 
-from ansible import utils
-
-try:
-    import prettytable
-    HAS_PRETTYTABLE = True
-except ImportError:
-    HAS_PRETTYTABLE = False
-
-
-class CallbackModule(object):
-    """This is an example ansible callback plugin that sends status
-    updates to a Slack channel during playbook execution.
-
-    This plugin makes use of the following environment variables:
-        SLACK_TOKEN (required): Slack API token
-        SLACK_CHANNEL  (optional): Slack channel to post in. Default: ansible
-        SLACK_FROM  (optional): Name to post as. Default: ansible
-        SLACK_NOTIFY (optional): Add notify flag to important messages ("true" or "false"). Default: true
-
-    Requires:
-        prettytable
-
-    """
+class CallbackModule(CallbackBase):
+    CALLBACK_VERSION = 2.0
+    CALLBACK_NAME = 'slack'
+    CALLBACK_NEEDS_WHITELIST = True
 
     def __init__(self):
-        if not HAS_PRETTYTABLE:
-            self.disabled = True
-            utils.warning('The `prettytable` python module is not installed. '
-                          'Disabling the Slack callback plugin.')
+        super(CallbackModule, self).__init__()
+    
+    
 
-        self.msg_uri = 'https://hooks.slack.com/services/'
-        self.token = os.getenv('SLACK_TOKEN')
-        self.channel = os.getenv('SLACK_CHANNEL', '#ansible')
-        self.username = os.getenv('SLACK_FROM', 'ansible')
-        self.allow_notify = (os.getenv('SLACK_NOTIFY') != 'false')
+    def set_options(self, task_keys=None, var_options=None, direct=None):
+        super(CallbackModule, self).set_options(task_keys=task_keys, var_options=var_options, direct=direct)
 
-        if self.token is None:
-            self.disabled = True
-            utils.warning('Slack token could not be loaded. The Slack '
-                          'token can be provided using the `SLACK_TOKEN` '
-                          'environment variable.')
+        # Read and assign environment variables to memory so that we can use
+        # them later.
+        self.slack_webhook_url = os.environ.get('SLACK_WEBHOOK_URL')
+        self.slack_channel = os.environ.get('SLACK_CHANNEL')
 
-        self.printed_playbook = False
-        self.playbook_name = None
-        self.template_name = 'Ansible Job'
-
-    def send_msg(self, msg, notify=False):
-        """Method for sending a message to Slack"""
-
-        params = {}
-        params['channel'] = self.channel
-        params['username'] = self.username[:15]  # max length is 15
-        params['text'] = msg
-
-        url = ('%s%s' % (self.msg_uri, self.token))
-        try:
-            data = json.dumps(params)
-            req = urllib2.Request(url, data)
-            response = urllib2.urlopen(req)
-            return response.read()
-        except:
-            utils.warning('Could not submit message to Slack')
-
-    def on_any(self, *args, **kwargs):
-        pass
-
-    def runner_on_failed(self, host, res, ignore_errors=False):
-        pass
-
-    def runner_on_ok(self, host, res):
-        pass
-
-    def runner_on_skipped(self, host, item=None):
-        pass
-
-    def runner_on_unreachable(self, host, res):
-        pass
-
-    def runner_on_no_hosts(self):
-        pass
-
-    def runner_on_async_poll(self, host, res, jid, clock):
-        pass
-
-    def runner_on_async_ok(self, host, res, jid):
-        pass
-
-    def runner_on_async_failed(self, host, res, jid):
-        pass
-
-    def playbook_on_start(self):
-        pass
-
-    def playbook_on_notify(self, host, handler):
-        pass
-
-    def playbook_on_no_hosts_matched(self):
-        pass
-
-    def playbook_on_no_hosts_remaining(self):
-        pass
-
-    def playbook_on_task_start(self, name, is_conditional):
-        pass
-
-    def playbook_on_vars_prompt(self, varname, private=True, prompt=None,
-                                encrypt=None, confirm=False, salt_size=None,
-                                salt=None, default=None):
-        pass
-
-    def playbook_on_setup(self):
-        pass
-
-    def playbook_on_import_for_host(self, host, imported_file):
-        pass
-
-    def playbook_on_not_import_for_host(self, host, missing_file):
-        pass
-
-    def playbook_on_play_start(self, name):
+        if self.slack_webhook_url is None:
+            self._display.display('Error: The slack callback plugin requires `SLACK_WEBHOOK_URL` to be defined in the environment')
+            sys.exit(1)
+    
+    def v2_playbook_on_play_start(self, name):
         try:
             self.template_name = self.play.vars['tower_job_template_name']
         except (KeyError, AttributeError):
@@ -158,13 +70,18 @@ class CallbackModule(object):
             self.printed_playbook = True
             subset = self.play.playbook.inventory._subset
             skip_tags = self.play.playbook.skip_tags
+            
+    def v2_runner_on_failed(self, taskResult, ignore_errors=False):
+        self.notify(self.slack_webhook_url, taskResult, self.slack_channel)
 
-    def playbook_on_stats(self, stats):
-        """Display info about playbook statistics"""
+    def v2_runner_on_unreachable(self, taskResult):
+        self.notify(self.slack_webhook_url, taskResult, self.slack_channel)
+    
+    def v2_playbook_on_stats(self, stats):
+        """Display info about playbook statistics""" 
         hosts = sorted(stats.processed.keys())
-
-        t = prettytable.PrettyTable(['Host', 'Ok', 'Changed', 'Unreachable',
-                                     'Failures'])
+        print ("{:<8} {:<15} {:<10} {:<8} {:<8}".format('Host','Ok','Changed', 'Unreachable', 'Failures'))
+       
 
         failures = False
         unreachable = False
@@ -177,9 +94,6 @@ class CallbackModule(object):
             if s['unreachable'] > 0:
                 unreachable = True
 
-            t.add_row([h] + [s[k] for k in ['ok', 'changed', 'unreachable',
-                                            'failures']])
-
         self.send_msg("%s: Playbook complete" % self.template_name)
 
         if failures or unreachable:
@@ -188,4 +102,38 @@ class CallbackModule(object):
         else:
             color = 'green'
 
-        self.send_msg("```%s:\n%s```" % (self.playbook_name, t))
+        #self.send_msg("```%s:\n%s```" % (self.playbook_name, t))
+
+
+    def notify(slack_webhook_url, taskResult, slack_channel=None):
+        # Format the Slack message. We'll use message attachments
+        # https://api.slack.com/docs/message-attachments
+        payload = {
+            'username': 'Ansible',
+            'attachments': [
+                {
+                    'title': 'Ansible run has failed. HOST: {} {}'.format(taskResult._host, taskResult._task),
+                    'color': '#FF0000',
+                    'text': '```{}```'.format(json.dumps(taskResult._result, indent=2))
+                }
+            ]
+        }
+
+        # The webhook has a default url. If one is not configured, we'll use the
+        # default
+        if slack_channel:
+            payload['channel'] = slack_channel
+        encoded_msg = json.dumps(payload).encode('utf-8')
+        resp = http.request('POST',slack_webhook_url, body=encoded_msg)
+        
+        
+      
+    def send_msg(self, msg, notify=False):
+        """Method for sending a message to Slack"""
+
+        params = {}
+        params['channel'] = self.slack_webhook_url
+        params['username'] = 'Ansible'
+        params['text'] = msg
+        encoded_msg = json.dumps(params).encode('utf-8')
+        resp = http.request('POST',slack_webhook_url, body=encoded_msg)
